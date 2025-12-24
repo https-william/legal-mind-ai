@@ -8,6 +8,7 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 import fitz  # PyMuPDF
+import google.generativeai as genai
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide")
@@ -20,15 +21,6 @@ st.markdown("""
     header[data-testid="stHeader"] { background: transparent; }
     .stChatInputContainer textarea { background-color: #121212 !important; border: 1px solid #333 !important; color: #e0e0e0 !important; }
     [data-testid="stSidebar"] { background-color: #0a0a0a; border-right: 1px solid #222; }
-    
-    /* NEURAL PULSE ANIMATION */
-    .neural-loader { display: flex; justify-content: center; align-items: center; height: 60px; gap: 8px; }
-    .bar { width: 6px; height: 20px; background: linear-gradient(180deg, #D4AF37, #AA8C2C); border-radius: 3px; animation: pulse 1s ease-in-out infinite; }
-    .bar:nth-child(1) { animation-delay: 0.0s; height: 20px; }
-    .bar:nth-child(2) { animation-delay: 0.1s; height: 35px; }
-    .bar:nth-child(3) { animation-delay: 0.2s; height: 45px; }
-    
-    @keyframes pulse { 0% { opacity: 0.6; } 50% { transform: scaleY(1.5); opacity: 1; } 100% { opacity: 0.6; } }
     </style>
 """, unsafe_allow_html=True)
 
@@ -72,7 +64,7 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v5.2 • Unrestricted Core")
+    st.caption("v5.3 • Auto-Fallback Core")
     st.markdown("---")
     
     api_key = st.text_input("🔑 API Credentials", type="password", placeholder="Paste Google Key")
@@ -119,10 +111,10 @@ if prompt := st.chat_input("Query the Legal Database..."):
     if "vector_store" in st.session_state and st.session_state.vector_store is not None and api_key:
         with st.chat_message("assistant"):
             
-            # 1. VISUAL LOADING STATE
+            # VISUAL LOADING STATE
             status_box = st.status("⚖️ Analyzing Legal Precedents...", expanded=True)
             
-            # 2. RETRIEVE DOCUMENTS
+            # 1. RETRIEVE DOCUMENTS
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
@@ -130,54 +122,64 @@ if prompt := st.chat_input("Query the Legal Database..."):
             status_box.write("✅ Evidence Retrieved.")
             status_box.update(label="Drafting Response...", state="running", expanded=False)
             
-            # 3. GENERATE WITH SAFETY FILTERS DISABLED
-            # This prevents the "Silence" bug
-            llm = ChatGoogleGenerativeAI(
-                model="gemini-1.5-flash", 
-                temperature=0.0, 
-                streaming=True,
-                safety_settings={
-                    "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
-                    "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
-                    "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
-                    "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
-                }
-            )
+            # 2. GENERATE (With Fallback)
             
-            prompt_template = f"""
-            SYSTEM: You are a Senior Legal Counsel.
-            CONTEXT: {context_text}
-            QUESTION: {prompt}
-            TASK: Answer strictly based on the context. Cite sections.
-            ANSWER:
-            """
-            
+            # Helper to try generation
+            def try_generate(model_name):
+                llm = ChatGoogleGenerativeAI(
+                    model=model_name, 
+                    temperature=0.0, 
+                    streaming=True,
+                    safety_settings={
+                        "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
+                        "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
+                        "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
+                        "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
+                    }
+                )
+                prompt_template = f"""
+                SYSTEM: You are a Senior Legal Counsel.
+                CONTEXT: {context_text}
+                QUESTION: {prompt}
+                TASK: Answer strictly based on the context. Cite sections.
+                ANSWER:
+                """
+                return llm.stream(prompt_template)
+
             full_response = ""
             message_placeholder = st.empty()
             
             try:
-                stream = llm.stream(prompt_template)
+                # TRY 1: Flash Model
+                stream = try_generate("models/gemini-1.5-flash")
                 for chunk in stream:
                     full_response += chunk.content
                     message_placeholder.markdown(full_response + "▌")
                 
+            except Exception as e:
+                # TRY 2: Pro Model (Fallback)
+                try:
+                    status_box.write("⚠️ Switching to Backup Model...")
+                    stream = try_generate("gemini-pro")
+                    for chunk in stream:
+                        full_response += chunk.content
+                        message_placeholder.markdown(full_response + "▌")
+                except Exception as final_e:
+                    status_box.update(label="Error", state="error")
+                    message_placeholder.error(f"⚠️ AI Generation Error: {str(final_e)}")
+                    st.info("Raw Evidence Retrieved:")
+                    st.write(context_text)
+
+            if full_response:
                 message_placeholder.markdown(full_response)
                 status_box.update(label="Complete", state="complete", expanded=False)
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
                 
-                # Show Citations at the bottom
                 with st.expander("⚖️  View Source Evidence"):
                     for doc in docs:
                         st.markdown(f"**Section Reference:**")
                         st.caption(doc.page_content[:300] + "...")
                         st.markdown("---")
-                        
-            except Exception as e:
-                status_box.update(label="Error", state="error")
-                message_placeholder.error(f"⚠️ AI Generation Error: {str(e)}")
-                # Fallback: Show the evidence anyway
-                st.info("Raw Evidence Retrieved (AI Failed to Summarize):")
-                st.write(context_text)
 
     elif not api_key:
         st.warning("Please enter API Key.")
