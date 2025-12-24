@@ -5,14 +5,20 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyMuPDFLoader
-from langchain.prompts import PromptTemplate
-from langchain.chains import RetrievalQA
+
+# --- FIX 1: NEW IMPORT LOCATIONS ---
+from langchain_core.prompts import PromptTemplate
+try:
+    from langchain.chains import RetrievalQA
+except ImportError:
+    from langchain_community.chains import RetrievalQA
+    
 import tempfile
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚡", layout="wide")
 
-# 2. CSS STYLING (The "Neural Pulse" & Typing Effect)
+# 2. CSS STYLING (Neural Pulse)
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
@@ -20,14 +26,12 @@ st.markdown("""
     .stApp { background-color: #000000; font-family: 'Inter', sans-serif; }
     header[data-testid="stHeader"] { background: transparent; }
     
-    /* INPUT BAR */
     .stChatInputContainer textarea { 
         background-color: #111 !important; 
         border: 1px solid #333 !important; 
         color: white !important; 
     }
     
-    /* SIDEBAR */
     [data-testid="stSidebar"] { 
         background-color: #050505; 
         border-right: 1px solid #222; 
@@ -108,8 +112,7 @@ def process_files(uploaded_files):
     
     if not documents: return None
 
-    # --- LOGIC UPGRADE 1: STRUCTURE-AWARE CHUNKING (From RAGFlow) ---
-    # Instead of random chunks, we try to split by Legal Headers first.
+    # STRUCTURE-AWARE CHUNKING
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, 
         chunk_overlap=200,
@@ -172,8 +175,7 @@ if prompt := st.chat_input("Ask a legal question..."):
                 </div>
             """, unsafe_allow_html=True)
             
-            # --- LOGIC UPGRADE 2: STREAMING (From CopilotKit) ---
-            # We construct the chain but don't run it yet
+            # STREAMING LOGIC
             llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.0, streaming=True)
             
             prompt_template = """
@@ -188,7 +190,6 @@ if prompt := st.chat_input("Ask a legal question..."):
             """
             PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
             
-            # Manual Retrieval (To get sources for later)
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
@@ -200,20 +201,23 @@ if prompt := st.chat_input("Ask a legal question..."):
             full_response = ""
             message_placeholder = st.empty()
             
-            # The "Streaming" Magic Loop
-            stream = llm.stream(PROMPT.format(context=context_text, question=prompt))
-            for chunk in stream:
-                full_response += chunk.content
-                message_placeholder.markdown(full_response + "▌") # The typing cursor
-            
-            message_placeholder.markdown(full_response)
-            
-            # Save and Show Citations
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
-            with st.expander("Citations (Structure-Aware)"):
-                for doc in docs:
-                    st.markdown(f"**Reference:**")
-                    st.caption(doc.page_content[:300])
-                    st.markdown("---")
+            try:
+                stream = llm.stream(PROMPT.format(context=context_text, question=prompt))
+                for chunk in stream:
+                    full_response += chunk.content
+                    message_placeholder.markdown(full_response + "▌")
+                
+                message_placeholder.markdown(full_response)
+                
+                # Save and Show Citations
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+                with st.expander("Citations (Structure-Aware)"):
+                    for doc in docs:
+                        st.markdown(f"**Reference:**")
+                        st.caption(doc.page_content[:300])
+                        st.markdown("---")
+            except Exception as e:
+                 message_placeholder.error(f"Generation Error: {e}")
+
     else:
         st.warning("Please upload a document to begin.")
