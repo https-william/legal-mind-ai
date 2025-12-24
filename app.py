@@ -7,7 +7,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyMuPDFLoader
-# Try importing chains safely
 try:
     from langchain.chains import RetrievalQA
 except ImportError:
@@ -36,51 +35,50 @@ st.markdown("""
     header[data-testid="stHeader"] { background: transparent; }
     .stChatInputContainer textarea { background-color: #111 !important; border: 1px solid #333 !important; color: white !important; }
     [data-testid="stSidebar"] { background-color: #050505; border-right: 1px solid #222; }
-    /* Success Message Style */
-    .stSuccess { background-color: rgba(0, 255, 0, 0.1) !important; color: #00ff00 !important; }
+    .stProgress > div > div > div > div { background-color: #4CAF50; }
     </style>
 """, unsafe_allow_html=True)
 
-# 4. SMART BATCHING FUNCTION (The Speed Fix)
-def create_vector_store_batched(chunks, embeddings, batch_size=50):
-    total_chunks = len(chunks)
+# 4. OPTIMISTIC INDEXING (The Speed Fix)
+def create_vector_store_optimistic(chunks, embeddings):
     vector_store = None
+    batch_size = 100 # Aggressive batching (More data per call)
+    total_chunks = len(chunks)
     
-    # Progress Bar for Embedding
-    embed_bar = st.progress(0, text="Creating Neural Embeddings...")
+    # Progress Bar
+    embed_bar = st.progress(0, text="Accelerating Neural Engine...")
     
     for i in range(0, total_chunks, batch_size):
-        # Slice the batch
         batch = chunks[i : i + batch_size]
         
-        # Create (or add to) Vector Store
-        if vector_store is None:
-            vector_store = FAISS.from_documents(batch, embeddings)
-        else:
-            vector_store.add_documents(batch)
-            
+        # SMART RETRY LOGIC (Only sleep if we crash)
+        success = False
+        retries = 0
+        while not success and retries < 3:
+            try:
+                if vector_store is None:
+                    vector_store = FAISS.from_documents(batch, embeddings)
+                else:
+                    vector_store.add_documents(batch)
+                success = True # It worked! No sleep needed.
+            except Exception as e:
+                # We hit a limit. NOW we sleep.
+                retries += 1
+                wait_time = 2 * retries # Exponential backoff (2s, 4s, 6s)
+                time.sleep(wait_time)
+        
         # Update Progress
         progress = min((i + batch_size) / total_chunks, 1.0)
-        embed_bar.progress(progress, text=f"Embedding batch {i//batch_size + 1} ({int(progress*100)}%)...")
-        
-        # CRITICAL: Wait 1.5 seconds to respect Google's Rate Limit
-        time.sleep(1.5)
+        embed_bar.progress(progress, text=f"Indexing batch {i//batch_size + 1}...")
         
     embed_bar.empty()
     return vector_store
 
 @st.cache_resource
 def process_files(uploaded_files):
-    progress_text = "Initializing High-Speed Engine..."
-    my_bar = st.progress(0, text=progress_text)
-    
+    # 1. READ FILES (PyMuPDF is instant)
     documents = []
-    total_files = len(uploaded_files)
-    
-    # 1. READ FILES (Fast)
-    for i, uploaded_file in enumerate(uploaded_files):
-        my_bar.progress((i / total_files) * 0.3, text=f"Reading File {i+1}/{total_files}...")
-        
+    for uploaded_file in uploaded_files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
@@ -90,25 +88,20 @@ def process_files(uploaded_files):
         documents.extend(docs)
         
     # 2. SPLIT TEXT
-    my_bar.progress(0.4, text="Splitting Documents...")
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(documents)
     
-    # 3. EMBED (The "Smart" Way)
-    my_bar.progress(0.5, text=f"Connecting to Google Brain ({len(chunks)} chunks)...")
+    st.toast(f"Processing {len(chunks)} data points...", icon="⚙️")
     
-    # Switch back to Google Embeddings (Fast API)
+    # 3. EMBED (Optimistic Mode)
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     
     try:
-        vector_store = create_vector_store_batched(chunks, embeddings)
-        my_bar.progress(1.0, text="Indexing Complete!")
-        time.sleep(1)
-        my_bar.empty()
+        vector_store = create_vector_store_optimistic(chunks, embeddings)
+        st.toast("System Online!", icon="✅")
         return vector_store
-        
     except Exception as e:
-        st.error(f"Error connecting to Google: {e}")
+        st.error(f"Connection Error: {e}")
         return None
 
 def get_answer(vector_store, question):
@@ -171,7 +164,6 @@ if prompt := st.chat_input("Ask a legal question..."):
 
     if "vector_store" in st.session_state:
         with st.chat_message("assistant"):
-            # Lottie Animation
             placeholder = st.empty()
             with placeholder:
                 col1, col2, col3 = st.columns([1,1,1])
