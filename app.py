@@ -8,12 +8,11 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
-import tempfile
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide")
 
-# 2. CSS STYLING (Premium Law Theme)
+# 2. CSS STYLING
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
@@ -21,7 +20,6 @@ st.markdown("""
     .stApp { background-color: #050505; font-family: 'Inter', sans-serif; }
     header[data-testid="stHeader"] { background: transparent; }
     
-    /* INPUT & SIDEBAR */
     .stChatInputContainer textarea { 
         background-color: #121212 !important; 
         border: 1px solid #333 !important; 
@@ -32,7 +30,7 @@ st.markdown("""
         border-right: 1px solid #222; 
     }
     
-    /* NEURAL PULSE (Gold/Legal Theme) */
+    /* NEURAL PULSE */
     .neural-loader { display: flex; justify-content: center; align-items: center; height: 60px; gap: 8px; }
     .bar { width: 6px; height: 20px; background: linear-gradient(180deg, #D4AF37, #AA8C2C); border-radius: 3px; animation: pulse 1s ease-in-out infinite; }
     .bar:nth-child(1) { animation-delay: 0.0s; height: 20px; }
@@ -42,8 +40,6 @@ st.markdown("""
     .bar:nth-child(5) { animation-delay: 0.4s; height: 20px; }
     
     @keyframes pulse { 0% { opacity: 0.6; } 50% { transform: scaleY(1.5); opacity: 1; } 100% { opacity: 0.6; } }
-    
-    /* TOAST STYLING */
     div[data-testid="stToast"] { background-color: #111 !important; border: 1px solid #333 !important; color: white !important; }
     </style>
 """, unsafe_allow_html=True)
@@ -92,27 +88,29 @@ def create_vector_store_concurrent(chunks, embeddings):
     progress_bar.empty()
     return main_vector_store
 
-# --- FIX: REMOVED @st.cache_resource DECORATOR ---
-# This function is now standard. We rely on session_state to remember the result.
 def process_files(uploaded_files):
     if not uploaded_files: return None
     
     documents = []
     
-    # --- DIRECT MEMORY READ ---
+    # DIRECT MEMORY READ
     for uploaded_file in uploaded_files:
-        file_bytes = uploaded_file.getvalue()
-        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-            for i, page in enumerate(doc):
-                text = page.get_text()
-                if text:
-                    documents.append(Document(
-                        page_content=text, 
-                        metadata={"page": i+1, "source": uploaded_file.name}
-                    ))
+        try:
+            file_bytes = uploaded_file.getvalue()
+            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+                for i, page in enumerate(doc):
+                    text = page.get_text()
+                    if text:
+                        documents.append(Document(
+                            page_content=text, 
+                            metadata={"page": i+1, "source": uploaded_file.name}
+                        ))
+        except Exception as e:
+            st.error(f"Error reading PDF: {e}")
+            return None
     
     if not documents: 
-        st.error("❌ Error: Could not extract text from PDF.")
+        st.error("❌ Error: No readable text found. Is the PDF scanned?")
         return None
 
     # Structure-Aware Splitter
@@ -137,6 +135,9 @@ def process_files(uploaded_files):
 
 # 4. UI ORCHESTRATION
 
+if "messages" not in st.session_state: st.session_state.messages = []
+if "vector_store" not in st.session_state: st.session_state.vector_store = None
+
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
@@ -148,18 +149,28 @@ with st.sidebar:
     
     uploaded_files = st.file_uploader("📂 Upload Case Files", type="pdf", accept_multiple_files=True)
     
-    if "vector_store" in st.session_state and st.session_state.vector_store is not None:
-        st.success(f"● System Ready")
+    # --- MANUAL TRIGGER BUTTON (THE FIX) ---
+    if st.button("⚡ Analyze Documents", type="primary", use_container_width=True):
+        if not api_key:
+            st.error("Please enter an API Key first.")
+        elif not uploaded_files:
+            st.error("Please upload a PDF first.")
+        else:
+            with st.spinner("Processing..."):
+                # Force the process to run
+                store = process_files(uploaded_files)
+                if store:
+                    st.session_state.vector_store = store
+                    st.success("System Online")
+                    st.rerun() # Force refresh to update main screen
+    
+    if st.session_state.vector_store is not None:
+        st.success(f"● Online")
         
     if st.button("↻ Reset System", use_container_width=True):
         st.session_state.vector_store = None
+        st.session_state.messages = []
         st.rerun()
-
-if "messages" not in st.session_state: st.session_state.messages = []
-
-# Process Uploads
-if uploaded_files and api_key and ("vector_store" not in st.session_state or st.session_state.vector_store is None):
-    st.session_state.vector_store = process_files(uploaded_files)
 
 # Chat Interface
 if not st.session_state.messages:
@@ -175,9 +186,10 @@ if prompt := st.chat_input("Query the Legal Database..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    if "vector_store" in st.session_state and st.session_state.vector_store is not None:
+    if st.session_state.vector_store is not None:
         with st.chat_message("assistant"):
             
+            # ANIMATION
             placeholder_anim = st.empty()
             placeholder_anim.markdown("""<div class="neural-loader"><div class="bar"></div><div class="bar"></div><div class="bar"></div></div>""", unsafe_allow_html=True)
             
@@ -195,12 +207,14 @@ if prompt := st.chat_input("Query the Legal Database..."):
             """
             PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
             
+            # Retrieval
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
             
             placeholder_anim.empty()
             
+            # Streaming Generation
             full_response = ""
             message_placeholder = st.empty()
             
@@ -222,4 +236,4 @@ if prompt := st.chat_input("Query the Legal Database..."):
                  message_placeholder.error(f"Generation Error: {e}")
 
     else:
-        st.warning("⚠️ Please authenticate and upload a document.")
+        st.warning("Please upload a document and click 'Analyze Documents' to begin.")
