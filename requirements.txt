@@ -6,7 +6,6 @@ langchain-google-genai==0.0.9
 langchain-text-splitters==0.0.1
 faiss-cpu
 pymupdf
-sentence-transformers
 python-dotenv
 streamlit-lottie
 requests
