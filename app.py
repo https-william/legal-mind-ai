@@ -20,6 +20,15 @@ st.markdown("""
     header[data-testid="stHeader"] { background: transparent; }
     .stChatInputContainer textarea { background-color: #121212 !important; border: 1px solid #333 !important; color: #e0e0e0 !important; }
     [data-testid="stSidebar"] { background-color: #0a0a0a; border-right: 1px solid #222; }
+    
+    /* NEURAL PULSE ANIMATION */
+    .neural-loader { display: flex; justify-content: center; align-items: center; height: 60px; gap: 8px; }
+    .bar { width: 6px; height: 20px; background: linear-gradient(180deg, #D4AF37, #AA8C2C); border-radius: 3px; animation: pulse 1s ease-in-out infinite; }
+    .bar:nth-child(1) { animation-delay: 0.0s; height: 20px; }
+    .bar:nth-child(2) { animation-delay: 0.1s; height: 35px; }
+    .bar:nth-child(3) { animation-delay: 0.2s; height: 45px; }
+    
+    @keyframes pulse { 0% { opacity: 0.6; } 50% { transform: scaleY(1.5); opacity: 1; } 100% { opacity: 0.6; } }
     </style>
 """, unsafe_allow_html=True)
 
@@ -47,11 +56,11 @@ def process_files(uploaded_files):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
     chunks = text_splitter.split_documents(documents)
     
-    progress.progress(0.5, text="Building Neural Index (This takes ~60s)...")
+    progress.progress(0.5, text="Building Neural Index...")
     
     embeddings = get_embeddings()
     vector_store = FAISS.from_documents(chunks, embeddings)
-    vector_store.save_local("faiss_index_tax_act") # Save for later
+    vector_store.save_local("faiss_index_tax_act")
     
     progress.empty()
     return vector_store
@@ -63,7 +72,7 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v5.1 • Fail-Safe Core")
+    st.caption("v5.2 • Unrestricted Core")
     st.markdown("---")
     
     api_key = st.text_input("🔑 API Credentials", type="password", placeholder="Paste Google Key")
@@ -75,19 +84,19 @@ with st.sidebar:
             try:
                 embeddings = get_embeddings()
                 st.session_state.vector_store = FAISS.load_local("faiss_index_tax_act", embeddings, allow_dangerous_deserialization=True)
-                st.success("⚡ Tax Act Pre-Loaded")
+                st.success("⚡ Brain Loaded from Disk")
             except:
                 pass
 
     uploaded_files = st.file_uploader("📂 Upload New Files", type="pdf", accept_multiple_files=True)
     
-    if st.button("⚡ Process New Files", type="primary", use_container_width=True):
+    if st.button("⚡ Process Files", type="primary", use_container_width=True):
         if uploaded_files:
             with st.spinner("Processing..."):
                 store = process_files(uploaded_files)
                 if store:
                     st.session_state.vector_store = store
-                    st.success("New Database Online")
+                    st.success("Database Online")
                     st.rerun()
 
     if os.path.exists("faiss_index_tax_act"):
@@ -110,20 +119,30 @@ if prompt := st.chat_input("Query the Legal Database..."):
     if "vector_store" in st.session_state and st.session_state.vector_store is not None and api_key:
         with st.chat_message("assistant"):
             
-            # 1. RETRIEVE DOCUMENTS FIRST (This works without API Key)
+            # 1. VISUAL LOADING STATE
+            status_box = st.status("⚖️ Analyzing Legal Precedents...", expanded=True)
+            
+            # 2. RETRIEVE DOCUMENTS
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
             
-            # 2. SHOW EVIDENCE IMMEDIATELY (The Safety Net)
-            with st.status("🔍 Analyzing Legal Statutes...", expanded=True) as status:
-                st.write("Found relevant sections:")
-                for doc in docs:
-                    st.caption(f"📄 ...{doc.page_content[:150]}...")
-                status.update(label="Evidence Retrieved", state="complete", expanded=False)
-
-            # 3. TRY TO GENERATE ANSWER
-            llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.0, streaming=True)
+            status_box.write("✅ Evidence Retrieved.")
+            status_box.update(label="Drafting Response...", state="running", expanded=False)
+            
+            # 3. GENERATE WITH SAFETY FILTERS DISABLED
+            # This prevents the "Silence" bug
+            llm = ChatGoogleGenerativeAI(
+                model="gemini-1.5-flash", 
+                temperature=0.0, 
+                streaming=True,
+                safety_settings={
+                    "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
+                    "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
+                    "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
+                    "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
+                }
+            )
             
             prompt_template = f"""
             SYSTEM: You are a Senior Legal Counsel.
@@ -141,13 +160,24 @@ if prompt := st.chat_input("Query the Legal Database..."):
                 for chunk in stream:
                     full_response += chunk.content
                     message_placeholder.markdown(full_response + "▌")
+                
                 message_placeholder.markdown(full_response)
+                status_box.update(label="Complete", state="complete", expanded=False)
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
                 
+                # Show Citations at the bottom
+                with st.expander("⚖️  View Source Evidence"):
+                    for doc in docs:
+                        st.markdown(f"**Section Reference:**")
+                        st.caption(doc.page_content[:300] + "...")
+                        st.markdown("---")
+                        
             except Exception as e:
-                # IF API FAILS, WE STILL SHOW THE EVIDENCE
-                message_placeholder.error(f"⚠️ AI Generation Limit Reached. (Error: {str(e)})")
-                st.info("The relevant legal sections were retrieved successfully (see 'Evidence Retrieved' above).")
+                status_box.update(label="Error", state="error")
+                message_placeholder.error(f"⚠️ AI Generation Error: {str(e)}")
+                # Fallback: Show the evidence anyway
+                st.info("Raw Evidence Retrieved (AI Failed to Summarize):")
+                st.write(context_text)
 
     elif not api_key:
         st.warning("Please enter API Key.")
