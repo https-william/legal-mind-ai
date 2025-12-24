@@ -1,14 +1,15 @@
 import streamlit as st
 import os
 import shutil
-# We keep these for the "Brain" (Retrieval) which works fine
+# We keep these for the "Brain" (Retrieval) - Local & Free
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 import fitz  # PyMuPDF
-# We use the NATIVE Google library for the "Mouth" (Generation)
-import google.generativeai as genai
+
+# --- THE NEW ENGINE (GROQ) ---
+from langchain_groq import ChatGroq
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide")
@@ -28,6 +29,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_embeddings():
+    # Still using local embeddings (Free & Fast)
     return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
 def process_files(uploaded_files):
@@ -64,14 +66,12 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v6.0 • Native Core")
+    st.caption("v7.0 • Llama-3 Core")
     st.markdown("---")
     
-    api_key = st.text_input("🔑 API Credentials", type="password", placeholder="Paste Google Key")
-    if api_key: 
-        os.environ["GOOGLE_API_KEY"] = api_key
-        # Configure the native client immediately
-        genai.configure(api_key=api_key)
+    # GROQ KEY INPUT
+    api_key = st.text_input("🔑 Groq API Key", type="password", placeholder="gsk_...")
+    if api_key: os.environ["GROQ_API_KEY"] = api_key
     
     # LOAD BRAIN
     if os.path.exists("faiss_index_tax_act"):
@@ -117,7 +117,7 @@ if prompt := st.chat_input("Query the Legal Database..."):
             # VISUAL LOADING STATE
             status_box = st.status("⚖️ Analyzing Legal Precedents...", expanded=True)
             
-            # 1. RETRIEVE DOCUMENTS (LangChain - Works well)
+            # 1. RETRIEVE DOCUMENTS
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
@@ -125,8 +125,14 @@ if prompt := st.chat_input("Query the Legal Database..."):
             status_box.write("✅ Evidence Retrieved.")
             status_box.update(label="Drafting Response...", state="running", expanded=False)
             
-            # 2. GENERATE (Native Google Client - NO Pydantic Errors)
-            full_prompt = f"""
+            # 2. GENERATE WITH GROQ (Llama 3)
+            # This is the "Generous/Cost Free" engine you wanted.
+            llm = ChatGroq(
+                temperature=0, 
+                model_name="llama3-8b-8192"  # Fast, Smart, Free Tier
+            )
+            
+            prompt_template = f"""
             SYSTEM: You are a Senior Legal Counsel.
             CONTEXT: {context_text}
             QUESTION: {prompt}
@@ -138,32 +144,11 @@ if prompt := st.chat_input("Query the Legal Database..."):
             message_placeholder = st.empty()
             
             try:
-                # Direct call to Google's servers, bypassing LangChain validation
-                model = genai.GenerativeModel('gemini-1.5-flash')
-                response = model.generate_content(full_prompt, stream=True)
+                stream = llm.stream(prompt_template)
+                for chunk in stream:
+                    full_response += chunk.content
+                    message_placeholder.markdown(full_response + "▌")
                 
-                for chunk in response:
-                    if chunk.text:
-                        full_response += chunk.text
-                        message_placeholder.markdown(full_response + "▌")
-                
-            except Exception as e:
-                # Fallback to older model if Flash fails
-                try:
-                    status_box.write("⚠️ Switching to Backup Model...")
-                    model = genai.GenerativeModel('gemini-pro')
-                    response = model.generate_content(full_prompt, stream=True)
-                    for chunk in response:
-                        if chunk.text:
-                            full_response += chunk.text
-                            message_placeholder.markdown(full_response + "▌")
-                except Exception as final_e:
-                    status_box.update(label="Error", state="error")
-                    message_placeholder.error(f"Generation Error: {str(final_e)}")
-                    st.info("Raw Evidence Retrieved:")
-                    st.write(context_text)
-
-            if full_response:
                 message_placeholder.markdown(full_response)
                 status_box.update(label="Complete", state="complete", expanded=False)
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
@@ -173,8 +158,14 @@ if prompt := st.chat_input("Query the Legal Database..."):
                         st.markdown(f"**Section Reference:**")
                         st.caption(doc.page_content[:300] + "...")
                         st.markdown("---")
+                        
+            except Exception as e:
+                status_box.update(label="Error", state="error")
+                message_placeholder.error(f"Generation Error: {str(e)}")
+                st.info("Raw Evidence Retrieved:")
+                st.write(context_text)
 
     elif not api_key:
-        st.warning("Please enter API Key.")
+        st.warning("Please enter Groq API Key.")
     else:
         st.warning("Database not loaded.")
