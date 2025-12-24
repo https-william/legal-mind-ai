@@ -6,8 +6,9 @@ from streamlit_lottie import st_lottie
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_community.embeddings import HuggingFaceEmbeddings
+# Try importing chains safely
 try:
     from langchain.chains import RetrievalQA
 except ImportError:
@@ -15,144 +16,65 @@ except ImportError:
 from langchain.prompts import PromptTemplate
 import tempfile
 
-# 1. PAGE CONFIGURATION
-st.set_page_config(
-    page_title="Legal Mind AI",
-    page_icon="⚡",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# 1. CONFIG
+st.set_page_config(page_title="Legal Mind AI", page_icon="⚡", layout="wide")
 
-# 2. ASSETS (Lottie Animation)
+# 2. ASSETS
 def load_lottieurl(url: str):
     r = requests.get(url)
-    if r.status_code != 200:
-        return None
-    return r.json()
+    return r.json() if r.status_code == 200 else None
 
-# Professional "Data Processing" Animation
 lottie_scanning = load_lottieurl("https://lottie.host/68213322-2621-4d37-9759-424a7304e228/w2A3s9j8g8.json")
 
-# 3. GOOGLE-GRADE CSS ENGINE
+# 3. CSS (Kept your Vercel/Linear Style)
 st.markdown("""
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-    
-    :root {
-        --background: #050505;
-        --card-surface: rgba(255, 255, 255, 0.03);
-        --border-color: rgba(255, 255, 255, 0.08);
-        --accent-glow: rgba(41, 182, 246, 0.15);
-    }
-
-    .stApp {
-        background-color: var(--background);
-        font-family: 'Inter', sans-serif;
-        background-image: radial-gradient(circle at 50% 0%, #111 0%, #050505 50%);
-    }
-
-    /* HEADER FIXES */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+    .stApp { background-color: #000000; font-family: 'Inter', sans-serif; }
     header[data-testid="stHeader"] { background: transparent; }
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-
-    /* 3D INTERACTIVE CARDS */
-    .feature-card {
-        background: var(--card-surface);
-        border: 1px solid var(--border-color);
-        border-radius: 12px;
-        padding: 24px;
-        transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
-        height: 100%;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .feature-card:hover {
-        transform: translateY(-4px);
-        border-color: rgba(255, 255, 255, 0.2);
-        box-shadow: 0 10px 30px -10px var(--accent-glow);
-    }
-    
-    .card-icon { font-size: 22px; margin-bottom: 12px; opacity: 0.8; }
-    .card-title { font-size: 15px; font-weight: 600; color: #fff; margin-bottom: 6px; }
-    .card-desc { font-size: 13px; color: #888; line-height: 1.5; }
-
-    /* TYPOGRAPHY */
-    .hero-title {
-        font-size: 64px;
-        font-weight: 800;
-        letter-spacing: -2px;
-        background: linear-gradient(180deg, #FFFFFF 0%, #777 120%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 10px;
-    }
-    
-    /* INPUT FIELD - FLOATING DOCK */
-    .stChatInputContainer {
-        padding-bottom: 2rem;
-    }
-    .stChatInputContainer textarea {
-        background-color: #0A0A0A !important;
-        border: 1px solid #222 !important;
-        color: white !important;
-        border-radius: 12px !important;
-        font-family: 'Inter', sans-serif;
-    }
-    .stChatInputContainer textarea:focus {
-        border-color: #444 !important;
-        box-shadow: 0 0 0 1px #444 !important;
-    }
-
-    /* CHAT MESSAGES */
-    [data-testid="stChatMessage"] {
-        background: transparent;
-        border-bottom: 1px solid rgba(255,255,255,0.03);
-    }
-    
-    /* SIDEBAR STYLING */
-    [data-testid="stSidebar"] {
-        border-right: 1px solid var(--border-color);
-        background-color: #080808;
-    }
-    
+    .stChatInputContainer textarea { background-color: #111 !important; border: 1px solid #333 !important; color: white !important; }
+    [data-testid="stSidebar"] { background-color: #050505; border-right: 1px solid #222; }
     </style>
 """, unsafe_allow_html=True)
 
-# 4. SIDEBAR
-with st.sidebar:
-    st.markdown("### ⚡ Legal Mind AI")
-    st.caption("v3.0 • Production Environment")
-    st.markdown("---")
-    
-    api_key = st.text_input("API Key", type="password", placeholder="sk-...")
-    if api_key: os.environ["GOOGLE_API_KEY"] = api_key
-    
-    uploaded_file = st.file_uploader("Upload PDF", type="pdf", label_visibility="collapsed")
-    
-    if "vector_store" in st.session_state:
-        st.success("● System Online")
-        
-    st.markdown("---")
-    st.caption("System Metrics")
-    st.markdown(f"<div style='color: #444; font-size: 12px;'>Latency: < 800ms<br>Model: Gemini 1.5 Flash<br>RAG: Strict</div>", unsafe_allow_html=True)
-
-# 5. BACKEND LOGIC
+# 4. BACKEND LOGIC (Optimized for Speed)
 @st.cache_resource
-def process_pdf(uploaded_file):
-    if uploaded_file is not None:
+def process_files(uploaded_files):
+    # Progress Bar
+    progress_text = "Operation in progress. Please wait."
+    my_bar = st.progress(0, text=progress_text)
+    
+    documents = []
+    total_files = len(uploaded_files)
+    
+    for i, uploaded_file in enumerate(uploaded_files):
+        # Update progress
+        my_bar.progress((i / total_files) * 0.5, text=f"Reading File {i+1}/{total_files}...")
+        
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
-        loader = PyPDFLoader(tmp_file_path)
-        documents = loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = text_splitter.split_documents(documents)
-        embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-        vector_store = FAISS.from_documents(chunks, embeddings)
-        return vector_store
-    return None
+        
+        # Use PyMuPDF (Faster than PyPDF)
+        loader = PyMuPDFLoader(tmp_file_path)
+        docs = loader.load()
+        documents.extend(docs)
+        
+    # Chunking
+    my_bar.progress(0.6, text="Splitting Text...")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = text_splitter.split_documents(documents)
+    
+    # Embedding (The slow part)
+    my_bar.progress(0.7, text=f"Embedding {len(chunks)} chunks (This uses CPU)...")
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vector_store = FAISS.from_documents(chunks, embeddings)
+    
+    my_bar.progress(1.0, text="Indexing Complete!")
+    time.sleep(1)
+    my_bar.empty()
+    
+    return vector_store
 
 def get_answer(vector_store, question):
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.0)
@@ -176,95 +98,52 @@ def get_answer(vector_store, question):
     )
     return qa_chain.invoke({"query": question})
 
-# 6. UI ORCHESTRATION
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Processing Animation
-if uploaded_file and api_key and "vector_store" not in st.session_state:
-    placeholder = st.empty()
-    with placeholder:
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            st_lottie(lottie_scanning, height=100, key="ingest")
-        st.session_state.vector_store = process_pdf(uploaded_file)
-    placeholder.empty()
-    st.rerun()
-
-# HERO SECTION (Clean, Minimalist, Google-Esque)
-if not st.session_state.messages:
-    st.markdown("<br><br>", unsafe_allow_html=True)
-    st.markdown("<div class='hero-title' style='text-align: center;'>Legal Research.<br>Reimagined.</div>", unsafe_allow_html=True)
-    st.markdown("<div style='text-align: center; color: #666; margin-bottom: 60px;'>Grounded in Truth. Powered by Gemini.</div>", unsafe_allow_html=True)
+# 5. SIDEBAR
+with st.sidebar:
+    st.markdown("### ⚡ Legal Mind AI")
+    api_key = st.text_input("API Key", type="password", placeholder="sk-...")
+    if api_key: os.environ["GOOGLE_API_KEY"] = api_key
     
-    # 3D Cards Grid
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.markdown("""
-        <div class="feature-card">
-            <div class="card-icon">⚡</div>
-            <div class="card-title">Instant Citations</div>
-            <div class="card-desc">Every claim backed by Section & Subsection references.</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col2:
-        st.markdown("""
-        <div class="feature-card">
-            <div class="card-icon">📅</div>
-            <div class="card-title">Temporal Logic</div>
-            <div class="card-desc">Auto-detects Effective Date (Jan 1, 2026) vs Current Law.</div>
-        </div>
-        """, unsafe_allow_html=True)
-    with col3:
-        st.markdown("""
-        <div class="feature-card">
-            <div class="card-icon">🛡️</div>
-            <div class="card-title">Anti-Hallucination</div>
-            <div class="card-desc">Strict grounding ensures zero fabrication of laws.</div>
-        </div>
-        """, unsafe_allow_html=True)
+    # MULTIPLE FILES ENABLED HERE
+    uploaded_files = st.file_uploader(
+        "Upload PDF(s)", 
+        type="pdf", 
+        accept_multiple_files=True, # <--- THIS IS THE FIX
+        label_visibility="collapsed"
+    )
+    
+    if "vector_store" in st.session_state:
+        st.success(f"● Online ({len(uploaded_files)} files)")
 
-# CHAT INTERFACE
+# 6. ORCHESTRATION
+if "messages" not in st.session_state: st.session_state.messages = []
+
+# Trigger Processing
+if uploaded_files and api_key and "vector_store" not in st.session_state:
+    st.session_state.vector_store = process_files(uploaded_files)
+
+# Hero Section
+if not st.session_state.messages:
+    st.markdown("<br><h1 style='text-align: center; color: white;'>Legal Research, Accelerated.</h1>", unsafe_allow_html=True)
+
+# Chat Loop
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-if prompt := st.chat_input("Query the Legal Database..."):
-    # User Input
+if prompt := st.chat_input("Ask a legal question..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+    with st.chat_message("user"): st.markdown(prompt)
 
-    # AI Response
     if "vector_store" in st.session_state:
         with st.chat_message("assistant"):
-            # LOTTIE THINKING ANIMATION
-            placeholder = st.empty()
-            with placeholder:
-                col_a, col_b, col_c = st.columns([1,2,1])
-                with col_b:
-                    st_lottie(lottie_scanning, height=120, key="thinking")
-            
-            # Smart Delay Detection (Optional Toast)
-            if "penalty" in prompt.lower():
-                st.toast("⚠️ Analyzing High-Stakes Compliance...", icon="🚨")
-
-            response = get_answer(st.session_state.vector_store, prompt)
-            placeholder.empty() # Kill animation
-            
-            answer = response["result"]
-            sources = response["source_documents"]
-            
-            st.markdown(answer)
-            st.session_state.messages.append({"role": "assistant", "content": answer})
-            
-            # PROFESSIONAL CITATION DRAWER
-            with st.expander("📂 Source Documents (Verification)"):
-                for doc in sources:
-                    st.markdown(f"**Reference (Page {doc.metadata.get('page','-')}):**")
-                    st.caption(doc.page_content[:400] + "...")
-                    st.markdown("---")
-
+            with st.spinner("Analyzing..."):
+                response = get_answer(st.session_state.vector_store, prompt)
+                st.markdown(response["result"])
+                st.session_state.messages.append({"role": "assistant", "content": response["result"]})
+                with st.expander("Citations"):
+                    for doc in response["source_documents"]:
+                        st.markdown(f"**Page {doc.metadata.get('page','-')}**")
+                        st.caption(doc.page_content[:300])
     else:
-        st.warning("⚠️ Please upload the Tax Act PDF to begin.")
+        st.warning("Please upload documents first.")

@@ -5,7 +5,7 @@ langchain-core==0.1.31
 langchain-google-genai==0.0.9
 langchain-text-splitters==0.0.1
 faiss-cpu
-pypdf
+pymupdf
 sentence-transformers
 python-dotenv
 streamlit-lottie
