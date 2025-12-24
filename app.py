@@ -1,12 +1,14 @@
 import streamlit as st
 import os
 import time
-import fitz  # PyMuPDF
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+import shutil
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
+import fitz  # PyMuPDF
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide")
@@ -15,143 +17,106 @@ st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide"
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-    
     .stApp { background-color: #050505; font-family: 'Inter', sans-serif; }
     header[data-testid="stHeader"] { background: transparent; }
+    .stChatInputContainer textarea { background-color: #121212 !important; border: 1px solid #333 !important; color: #e0e0e0 !important; }
+    [data-testid="stSidebar"] { background-color: #0a0a0a; border-right: 1px solid #222; }
     
-    .stChatInputContainer textarea { 
-        background-color: #121212 !important; 
-        border: 1px solid #333 !important; 
-        color: #e0e0e0 !important; 
-    }
-    [data-testid="stSidebar"] { 
-        background-color: #0a0a0a; 
-        border-right: 1px solid #222; 
-    }
-    
-    /* NEURAL PULSE */
     .neural-loader { display: flex; justify-content: center; align-items: center; height: 60px; gap: 8px; }
     .bar { width: 6px; height: 20px; background: linear-gradient(180deg, #D4AF37, #AA8C2C); border-radius: 3px; animation: pulse 1s ease-in-out infinite; }
     .bar:nth-child(1) { animation-delay: 0.0s; height: 20px; }
     .bar:nth-child(2) { animation-delay: 0.1s; height: 35px; }
     .bar:nth-child(3) { animation-delay: 0.2s; height: 45px; }
-    .bar:nth-child(4) { animation-delay: 0.3s; height: 35px; }
-    .bar:nth-child(5) { animation-delay: 0.4s; height: 20px; }
     
     @keyframes pulse { 0% { opacity: 0.6; } 50% { transform: scaleY(1.5); opacity: 1; } 100% { opacity: 0.6; } }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. STABLE ENGINE (Low Memory Usage)
+# 3. ENGINE LOGIC
 
-def process_files_safe(uploaded_files):
+@st.cache_resource
+def get_embeddings():
+    return HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+def process_files(uploaded_files):
     if not uploaded_files: return None
     
-    main_vector_store = None
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    documents = []
+    progress = st.progress(0, text="Reading Legal Documents...")
     
-    status_text = st.empty()
-    progress_bar = st.progress(0, text="Initializing Safe Mode...")
+    for uploaded_file in uploaded_files:
+        file_bytes = uploaded_file.getvalue()
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            for i, page in enumerate(doc):
+                text = page.get_text()
+                if text:
+                    documents.append(Document(page_content=text, metadata={"page": i+1, "source": uploaded_file.name}))
     
-    total_docs_processed = 0
-    
-    try:
-        for uploaded_file in uploaded_files:
-            file_bytes = uploaded_file.getvalue()
-            doc = fitz.open(stream=file_bytes, filetype="pdf")
-            total_pages = len(doc)
-            
-            # PROCESS IN BATCHES OF 20 PAGES (Prevents Memory Crash)
-            batch_size = 20
-            for start_page in range(0, total_pages, batch_size):
-                end_page = min(start_page + batch_size, total_pages)
-                
-                # 1. Extract Text for this batch only
-                batch_docs = []
-                for i in range(start_page, end_page):
-                    page = doc[i]
-                    text = page.get_text()
-                    if text:
-                        batch_docs.append(Document(
-                            page_content=text, 
-                            metadata={"page": i+1, "source": uploaded_file.name}
-                        ))
-                
-                if not batch_docs:
-                    continue
-                    
-                # 2. Split
-                chunks = text_splitter.split_documents(batch_docs)
-                
-                # 3. Embed immediately and discard text
-                if chunks:
-                    if main_vector_store is None:
-                        main_vector_store = FAISS.from_documents(chunks, embeddings)
-                    else:
-                        main_vector_store.add_documents(chunks)
-                
-                # Update UI
-                progress = min(end_page / total_pages, 1.0)
-                progress_bar.progress(progress, text=f"Processing Pages {start_page}-{end_page} of {total_pages}...")
-                
-                # Force Memory Cleanup
-                del batch_docs
-                del chunks
-                
-            doc.close()
-            
-    except Exception as e:
-        st.error(f"❌ Error during processing: {e}")
-        return None
+    if not documents: return None
 
-    progress_bar.empty()
-    status_text.empty()
+    # Chunking
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=300)
+    chunks = text_splitter.split_documents(documents)
     
-    if main_vector_store:
-        st.toast("System Online (Safe Mode)", icon="✅")
-        return main_vector_store
-    else:
-        st.error("Could not extract any text.")
-        return None
+    progress.progress(0.5, text="Building Neural Index (This takes ~60s)...")
+    
+    # Embed
+    embeddings = get_embeddings()
+    vector_store = FAISS.from_documents(chunks, embeddings)
+    
+    # Save locally so we can download it
+    vector_store.save_local("faiss_index_tax_act")
+    
+    progress.empty()
+    return vector_store
 
 # 4. UI ORCHESTRATION
 
 if "messages" not in st.session_state: st.session_state.messages = []
-if "vector_store" not in st.session_state: st.session_state.vector_store = None
 
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v3.6 • Stable Core")
+    st.caption("v5.0 • Pre-Loaded Core")
     st.markdown("---")
     
     api_key = st.text_input("🔑 API Credentials", type="password", placeholder="Paste Google Key")
     if api_key: os.environ["GOOGLE_API_KEY"] = api_key
     
-    uploaded_files = st.file_uploader("📂 Upload Case Files", type="pdf", accept_multiple_files=True)
+    # MODE 1: PRE-LOADED BRAIN (The Fast Way)
+    # Checks if you uploaded the 'faiss_index_tax_act' folder to GitHub
+    if os.path.exists("faiss_index_tax_act"):
+        if "vector_store" not in st.session_state or st.session_state.vector_store is None:
+            try:
+                embeddings = get_embeddings()
+                st.session_state.vector_store = FAISS.load_local("faiss_index_tax_act", embeddings, allow_dangerous_deserialization=True)
+                st.success("⚡ Tax Act 2025 Pre-Loaded")
+            except Exception as e:
+                st.error(f"Could not load brain: {e}")
+
+    # MODE 2: MANUAL UPLOAD (The Slow Way)
+    uploaded_files = st.file_uploader("📂 Upload New Files", type="pdf", accept_multiple_files=True)
     
-    # TRIGGER BUTTON
-    if st.button("⚡ Analyze Documents", type="primary", use_container_width=True):
-        if not api_key:
-            st.error("Please enter an API Key first.")
-        elif not uploaded_files:
-            st.error("Please upload a PDF first.")
-        else:
-            with st.spinner("Processing large file (Page by Page)..."):
-                store = process_files_safe(uploaded_files)
+    if st.button("⚡ Process New Files", type="primary", use_container_width=True):
+        if uploaded_files:
+            with st.spinner("Processing..."):
+                store = process_files(uploaded_files)
                 if store:
                     st.session_state.vector_store = store
-                    st.success("Indexing Complete.")
+                    st.success("New Database Online")
                     st.rerun()
-    
-    if st.session_state.vector_store is not None:
-        st.success(f"● Online")
-        
-    if st.button("↻ Reset System", use_container_width=True):
-        st.session_state.vector_store = None
-        st.session_state.messages = []
-        st.rerun()
+
+    # ADMIN: Download the Brain
+    # This button lets YOU download the processed file to put on GitHub
+    if os.path.exists("faiss_index_tax_act"):
+        shutil.make_archive("legal_brain", 'zip', "faiss_index_tax_act")
+        with open("legal_brain.zip", "rb") as fp:
+            st.download_button(
+                label="💾 Download Processed Brain",
+                data=fp,
+                file_name="legal_brain.zip",
+                mime="application/zip"
+            )
 
 # Chat Interface
 if not st.session_state.messages:
@@ -167,7 +132,7 @@ if prompt := st.chat_input("Query the Legal Database..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    if st.session_state.vector_store is not None:
+    if "vector_store" in st.session_state and st.session_state.vector_store is not None and api_key:
         with st.chat_message("assistant"):
             
             placeholder_anim = st.empty()
@@ -205,13 +170,14 @@ if prompt := st.chat_input("Query the Legal Database..."):
                 message_placeholder.markdown(full_response)
                 
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
-                with st.expander("⚖️  Evidence Locker (Citations)"):
+                with st.expander("⚖️  Evidence Locker"):
                     for doc in docs:
-                        st.markdown(f"**Section Reference:**")
+                        st.markdown(f"**Reference:**")
                         st.caption(doc.page_content[:300] + "...")
                         st.markdown("---")
             except Exception as e:
                  message_placeholder.error(f"Generation Error: {e}")
-
+    elif not api_key:
+        st.warning("Please enter API Key.")
     else:
-        st.warning("Please upload a document and click 'Analyze Documents' to begin.")
+        st.warning("Database not loaded.")
