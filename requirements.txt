@@ -1,12 +1,11 @@
 streamlit
 langchain
 langchain-community
-langchain-core
-langchain-text-splitters
 langchain-google-genai
+langchain-text-splitters
 faiss-cpu
 pypdf
 sentence-transformers
+python-dotenv
 streamlit-lottie
 requests
-python-dotenv
