@@ -66,7 +66,7 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v7.0 • Llama-3 Core")
+    st.caption("v7.1 • Llama-3.3 Core")
     st.markdown("---")
     
     # GROQ KEY INPUT
@@ -125,11 +125,10 @@ if prompt := st.chat_input("Query the Legal Database..."):
             status_box.write("✅ Evidence Retrieved.")
             status_box.update(label="Drafting Response...", state="running", expanded=False)
             
-            # 2. GENERATE WITH GROQ (Llama 3)
-            # This is the "Generous/Cost Free" engine you wanted.
+            # 2. GENERATE WITH GROQ (Llama 3.3 - NEW VALID MODEL)
             llm = ChatGroq(
                 temperature=0, 
-                model_name="llama3-8b-8192"  # Fast, Smart, Free Tier
+                model_name="llama-3.3-70b-versatile"  # Updated to valid model name
             )
             
             prompt_template = f"""
