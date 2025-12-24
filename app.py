@@ -17,10 +17,10 @@ import tempfile
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚡", layout="wide")
 
-# 2. ASSETS
+# 2. ASSETS (With Fail-Safe)
 def load_lottieurl(url: str):
     try:
-        r = requests.get(url)
+        r = requests.get(url, timeout=2) # Add timeout so it doesn't hang
         return r.json() if r.status_code == 200 else None
     except:
         return None
@@ -39,19 +39,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 4. OPTIMISTIC INDEXING (The Speed Fix)
+# 4. OPTIMISTIC INDEXING
 def create_vector_store_optimistic(chunks, embeddings):
     vector_store = None
-    batch_size = 100 # Aggressive batching (More data per call)
+    batch_size = 100 
     total_chunks = len(chunks)
     
-    # Progress Bar
     embed_bar = st.progress(0, text="Accelerating Neural Engine...")
     
     for i in range(0, total_chunks, batch_size):
         batch = chunks[i : i + batch_size]
-        
-        # SMART RETRY LOGIC (Only sleep if we crash)
         success = False
         retries = 0
         while not success and retries < 3:
@@ -60,14 +57,11 @@ def create_vector_store_optimistic(chunks, embeddings):
                     vector_store = FAISS.from_documents(batch, embeddings)
                 else:
                     vector_store.add_documents(batch)
-                success = True # It worked! No sleep needed.
+                success = True 
             except Exception as e:
-                # We hit a limit. NOW we sleep.
                 retries += 1
-                wait_time = 2 * retries # Exponential backoff (2s, 4s, 6s)
-                time.sleep(wait_time)
+                time.sleep(2 * retries)
         
-        # Update Progress
         progress = min((i + batch_size) / total_chunks, 1.0)
         embed_bar.progress(progress, text=f"Indexing batch {i//batch_size + 1}...")
         
@@ -76,24 +70,20 @@ def create_vector_store_optimistic(chunks, embeddings):
 
 @st.cache_resource
 def process_files(uploaded_files):
-    # 1. READ FILES (PyMuPDF is instant)
     documents = []
     for uploaded_file in uploaded_files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_file_path = tmp_file.name
-        
         loader = PyMuPDFLoader(tmp_file_path)
         docs = loader.load()
         documents.extend(docs)
         
-    # 2. SPLIT TEXT
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(documents)
     
     st.toast(f"Processing {len(chunks)} data points...", icon="⚙️")
     
-    # 3. EMBED (Optimistic Mode)
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     
     try:
@@ -165,12 +155,18 @@ if prompt := st.chat_input("Ask a legal question..."):
     if "vector_store" in st.session_state:
         with st.chat_message("assistant"):
             placeholder = st.empty()
-            with placeholder:
-                col1, col2, col3 = st.columns([1,1,1])
-                with col2: st_lottie(lottie_scanning, height=100, key="loading")
             
-            response = get_answer(st.session_state.vector_store, prompt)
-            placeholder.empty()
+            # --- THE SAFETY FIX IS HERE ---
+            # If lottie loaded, play it. If not, use standard spinner.
+            if lottie_scanning:
+                with placeholder:
+                    col1, col2, col3 = st.columns([1,1,1])
+                    with col2: st_lottie(lottie_scanning, height=100, key="loading")
+                response = get_answer(st.session_state.vector_store, prompt)
+                placeholder.empty()
+            else:
+                with st.spinner("Analyzing Legal Framework..."):
+                    response = get_answer(st.session_state.vector_store, prompt)
             
             st.markdown(response["result"])
             st.session_state.messages.append({"role": "assistant", "content": response["result"]})
