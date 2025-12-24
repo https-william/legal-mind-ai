@@ -20,7 +20,7 @@ st.set_page_config(page_title="Legal Mind AI", page_icon="⚡", layout="wide")
 # 2. ASSETS (With Fail-Safe)
 def load_lottieurl(url: str):
     try:
-        r = requests.get(url, timeout=2) # Add timeout so it doesn't hang
+        r = requests.get(url, timeout=2)
         return r.json() if r.status_code == 200 else None
     except:
         return None
@@ -78,7 +78,11 @@ def process_files(uploaded_files):
         loader = PyMuPDFLoader(tmp_file_path)
         docs = loader.load()
         documents.extend(docs)
-        
+    
+    if not documents:
+        st.error("No text found in PDF. Is it a scanned image?")
+        return None
+
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     chunks = text_splitter.split_documents(documents)
     
@@ -129,7 +133,8 @@ with st.sidebar:
         label_visibility="collapsed"
     )
     
-    if "vector_store" in st.session_state:
+    # CRITICAL FIX: Only show success if vector_store IS NOT NONE
+    if "vector_store" in st.session_state and st.session_state.vector_store is not None:
         st.success(f"● Online")
 
 if "messages" not in st.session_state: st.session_state.messages = []
@@ -152,12 +157,12 @@ if prompt := st.chat_input("Ask a legal question..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
 
-    if "vector_store" in st.session_state:
+    # CRITICAL FIX: The Gatekeeper Check
+    if "vector_store" in st.session_state and st.session_state.vector_store is not None:
         with st.chat_message("assistant"):
             placeholder = st.empty()
             
-            # --- THE SAFETY FIX IS HERE ---
-            # If lottie loaded, play it. If not, use standard spinner.
+            # ANIMATION SAFETY CHECK
             if lottie_scanning:
                 with placeholder:
                     col1, col2, col3 = st.columns([1,1,1])
@@ -175,4 +180,4 @@ if prompt := st.chat_input("Ask a legal question..."):
                     st.markdown(f"**Page {doc.metadata.get('page','-')}**")
                     st.caption(doc.page_content[:300])
     else:
-        st.warning("Please upload documents first.")
+        st.error("⚠️ System Offline. Please upload a valid PDF and API Key.")
