@@ -8,7 +8,6 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 import fitz  # PyMuPDF
-import google.generativeai as genai
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide")
@@ -64,7 +63,7 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v5.3 • Auto-Fallback Core")
+    st.caption("v5.4 • Stable Core")
     st.markdown("---")
     
     api_key = st.text_input("🔑 API Credentials", type="password", placeholder="Paste Google Key")
@@ -122,20 +121,14 @@ if prompt := st.chat_input("Query the Legal Database..."):
             status_box.write("✅ Evidence Retrieved.")
             status_box.update(label="Drafting Response...", state="running", expanded=False)
             
-            # 2. GENERATE (With Fallback)
+            # 2. GENERATE (Simplified - No complex Safety Settings)
             
-            # Helper to try generation
             def try_generate(model_name):
+                # We removed the safety_settings dict causing the crash
                 llm = ChatGoogleGenerativeAI(
                     model=model_name, 
                     temperature=0.0, 
-                    streaming=True,
-                    safety_settings={
-                        "HARM_CATEGORY_HARASSMENT": "BLOCK_NONE",
-                        "HARM_CATEGORY_HATE_SPEECH": "BLOCK_NONE",
-                        "HARM_CATEGORY_SEXUALLY_EXPLICIT": "BLOCK_NONE",
-                        "HARM_CATEGORY_DANGEROUS_CONTENT": "BLOCK_NONE",
-                    }
+                    streaming=True
                 )
                 prompt_template = f"""
                 SYSTEM: You are a Senior Legal Counsel.
