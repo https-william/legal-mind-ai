@@ -98,9 +98,10 @@ def process_files(uploaded_files):
     
     documents = []
     
-    # --- DIRECT MEMORY READ ---
+    # --- DIRECT MEMORY READ (Safe Mode) ---
     for uploaded_file in uploaded_files:
-        file_bytes = uploaded_file.read()
+        # Use getvalue() instead of read() to prevent pointer exhaustion
+        file_bytes = uploaded_file.getvalue()
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for i, page in enumerate(doc):
                 text = page.get_text()
@@ -110,7 +111,9 @@ def process_files(uploaded_files):
                         metadata={"page": i+1, "source": uploaded_file.name}
                     ))
     
-    if not documents: return None
+    if not documents: 
+        st.error("❌ Error: Could not extract text from PDF.")
+        return None
 
     # Structure-Aware Splitter (Legal Headers)
     text_splitter = RecursiveCharacterTextSplitter(
@@ -129,7 +132,8 @@ def process_files(uploaded_files):
         st.toast("Jurisprudence Online.", icon="⚖️")
         return vector_store
     except Exception as e:
-        st.error(f"Connection Error: {e}")
+        # SHOW THE ERROR ON SCREEN so we know why it failed
+        st.error(f"❌ Connection Error: {e}")
         return None
 
 # 4. UI ORCHESTRATION
@@ -147,11 +151,17 @@ with st.sidebar:
     
     if "vector_store" in st.session_state and st.session_state.vector_store is not None:
         st.success(f"● System Ready")
+        
+    # RESET BUTTON (The Fix for Zombie State)
+    if st.button("↻ Reset System", use_container_width=True):
+        st.session_state.vector_store = None
+        st.rerun()
 
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# Process Uploads
-if uploaded_files and api_key and "vector_store" not in st.session_state:
+# Process Uploads - FIXED LOGIC HERE
+# If files exist, key exists, AND (store is missing OR store is broken/None) -> Try processing
+if uploaded_files and api_key and ("vector_store" not in st.session_state or st.session_state.vector_store is None):
     st.session_state.vector_store = process_files(uploaded_files)
 
 # Chat Interface
