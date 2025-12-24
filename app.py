@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 import time
-import concurrent.futures
 import fitz  # PyMuPDF
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -40,97 +39,80 @@ st.markdown("""
     .bar:nth-child(5) { animation-delay: 0.4s; height: 20px; }
     
     @keyframes pulse { 0% { opacity: 0.6; } 50% { transform: scaleY(1.5); opacity: 1; } 100% { opacity: 0.6; } }
-    div[data-testid="stToast"] { background-color: #111 !important; border: 1px solid #333 !important; color: white !important; }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. HIGH-SPEED LOGIC (MEMORY ONLY)
+# 3. STABLE ENGINE (Low Memory Usage)
 
-def embed_batch(args):
-    """Worker function to embed a single batch of text."""
-    batch, embeddings = args
-    try:
-        vector_store = FAISS.from_documents(batch, embeddings)
-        return vector_store
-    except Exception:
-        time.sleep(2)
-        try:
-            vector_store = FAISS.from_documents(batch, embeddings)
-            return vector_store
-        except:
-            return None
-
-def create_vector_store_concurrent(chunks, embeddings):
-    batch_size = 100
-    batches = [chunks[i : i + batch_size] for i in range(0, len(chunks), batch_size)]
-    
-    progress_bar = st.progress(0, text="⚖️  Analyzing Legal Framework...")
-    
-    args = [(batch, embeddings) for batch in batches]
-    main_vector_store = None
-    completed = 0
-    
-    # 4 Parallel Workers
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        results = executor.map(embed_batch, args)
-        
-        for result in results:
-            if result is not None:
-                if main_vector_store is None:
-                    main_vector_store = result
-                else:
-                    main_vector_store.merge_from(result)
-            
-            completed += 1
-            progress = min(completed / len(batches), 1.0)
-            progress_bar.progress(progress, text=f"⚖️  Indexing Volume {completed}/{len(batches)} (Ram-Jet Engine)...")
-            
-    progress_bar.empty()
-    return main_vector_store
-
-def process_files(uploaded_files):
+def process_files_safe(uploaded_files):
     if not uploaded_files: return None
     
-    documents = []
+    main_vector_store = None
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
     
-    # DIRECT MEMORY READ
-    for uploaded_file in uploaded_files:
-        try:
+    status_text = st.empty()
+    progress_bar = st.progress(0, text="Initializing Safe Mode...")
+    
+    total_docs_processed = 0
+    
+    try:
+        for uploaded_file in uploaded_files:
             file_bytes = uploaded_file.getvalue()
-            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
-                for i, page in enumerate(doc):
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            total_pages = len(doc)
+            
+            # PROCESS IN BATCHES OF 20 PAGES (Prevents Memory Crash)
+            batch_size = 20
+            for start_page in range(0, total_pages, batch_size):
+                end_page = min(start_page + batch_size, total_pages)
+                
+                # 1. Extract Text for this batch only
+                batch_docs = []
+                for i in range(start_page, end_page):
+                    page = doc[i]
                     text = page.get_text()
                     if text:
-                        documents.append(Document(
+                        batch_docs.append(Document(
                             page_content=text, 
                             metadata={"page": i+1, "source": uploaded_file.name}
                         ))
-        except Exception as e:
-            st.error(f"Error reading PDF: {e}")
-            return None
-    
-    if not documents: 
-        st.error("❌ Error: No readable text found. Is the PDF scanned?")
+                
+                if not batch_docs:
+                    continue
+                    
+                # 2. Split
+                chunks = text_splitter.split_documents(batch_docs)
+                
+                # 3. Embed immediately and discard text
+                if chunks:
+                    if main_vector_store is None:
+                        main_vector_store = FAISS.from_documents(chunks, embeddings)
+                    else:
+                        main_vector_store.add_documents(chunks)
+                
+                # Update UI
+                progress = min(end_page / total_pages, 1.0)
+                progress_bar.progress(progress, text=f"Processing Pages {start_page}-{end_page} of {total_pages}...")
+                
+                # Force Memory Cleanup
+                del batch_docs
+                del chunks
+                
+            doc.close()
+            
+    except Exception as e:
+        st.error(f"❌ Error during processing: {e}")
         return None
 
-    # Structure-Aware Splitter
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000, 
-        chunk_overlap=200,
-        separators=["\nSection ", "\nArticle ", "\nPART ", "\n\n", "\n", " ", ""]
-    )
-    chunks = text_splitter.split_documents(documents)
+    progress_bar.empty()
+    status_text.empty()
     
-    st.toast(f"📜 Extracted {len(chunks)} legal clauses.", icon="🏛️")
-    
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    
-    try:
-        vector_store = create_vector_store_concurrent(chunks, embeddings)
-        st.toast("Jurisprudence Online.", icon="⚖️")
-        return vector_store
-    except Exception as e:
-        st.error(f"❌ Connection Error: {e}")
+    if main_vector_store:
+        st.toast("System Online (Safe Mode)", icon="✅")
+        return main_vector_store
+    else:
+        st.error("Could not extract any text.")
         return None
 
 # 4. UI ORCHESTRATION
@@ -141,7 +123,7 @@ if "vector_store" not in st.session_state: st.session_state.vector_store = None
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v3.5 • High-Velocity RAG")
+    st.caption("v3.6 • Stable Core")
     st.markdown("---")
     
     api_key = st.text_input("🔑 API Credentials", type="password", placeholder="Paste Google Key")
@@ -149,20 +131,19 @@ with st.sidebar:
     
     uploaded_files = st.file_uploader("📂 Upload Case Files", type="pdf", accept_multiple_files=True)
     
-    # --- MANUAL TRIGGER BUTTON (THE FIX) ---
+    # TRIGGER BUTTON
     if st.button("⚡ Analyze Documents", type="primary", use_container_width=True):
         if not api_key:
             st.error("Please enter an API Key first.")
         elif not uploaded_files:
             st.error("Please upload a PDF first.")
         else:
-            with st.spinner("Processing..."):
-                # Force the process to run
-                store = process_files(uploaded_files)
+            with st.spinner("Processing large file (Page by Page)..."):
+                store = process_files_safe(uploaded_files)
                 if store:
                     st.session_state.vector_store = store
-                    st.success("System Online")
-                    st.rerun() # Force refresh to update main screen
+                    st.success("Indexing Complete.")
+                    st.rerun()
     
     if st.session_state.vector_store is not None:
         st.success(f"● Online")
@@ -189,7 +170,6 @@ if prompt := st.chat_input("Query the Legal Database..."):
     if st.session_state.vector_store is not None:
         with st.chat_message("assistant"):
             
-            # ANIMATION
             placeholder_anim = st.empty()
             placeholder_anim.markdown("""<div class="neural-loader"><div class="bar"></div><div class="bar"></div><div class="bar"></div></div>""", unsafe_allow_html=True)
             
@@ -207,14 +187,12 @@ if prompt := st.chat_input("Query the Legal Database..."):
             """
             PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
             
-            # Retrieval
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
             
             placeholder_anim.empty()
             
-            # Streaming Generation
             full_response = ""
             message_placeholder = st.empty()
             
