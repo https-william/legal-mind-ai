@@ -5,14 +5,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.document_loaders import PyMuPDFLoader
-
-# --- FIX 1: NEW IMPORT LOCATIONS ---
 from langchain_core.prompts import PromptTemplate
-try:
-    from langchain.chains import RetrievalQA
-except ImportError:
-    from langchain_community.chains import RetrievalQA
-    
 import tempfile
 
 # 1. CONFIGURATION
@@ -175,7 +168,7 @@ if prompt := st.chat_input("Ask a legal question..."):
                 </div>
             """, unsafe_allow_html=True)
             
-            # STREAMING LOGIC
+            # AGENTIC STREAMING LOGIC (No RetrievalQA needed!)
             llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.0, streaming=True)
             
             prompt_template = """
@@ -190,14 +183,15 @@ if prompt := st.chat_input("Ask a legal question..."):
             """
             PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
             
+            # 1. Fetch relevant chunks
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
             
-            # Kill Animation
+            # Kill Animation before typing
             placeholder_anim.empty()
             
-            # Stream the Response
+            # 2. Stream the Response
             full_response = ""
             message_placeholder = st.empty()
             
@@ -209,7 +203,7 @@ if prompt := st.chat_input("Ask a legal question..."):
                 
                 message_placeholder.markdown(full_response)
                 
-                # Save and Show Citations
+                # 3. Save and Show Citations
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
                 with st.expander("Citations (Structure-Aware)"):
                     for doc in docs:
