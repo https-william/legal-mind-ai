@@ -1,13 +1,14 @@
 import streamlit as st
 import os
 import shutil
-from langchain_google_genai import ChatGoogleGenerativeAI
+# We keep these for the "Brain" (Retrieval) which works fine
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 import fitz  # PyMuPDF
+# We use the NATIVE Google library for the "Mouth" (Generation)
+import google.generativeai as genai
 
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide")
@@ -63,11 +64,14 @@ if "messages" not in st.session_state: st.session_state.messages = []
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/924/924915.png", width=40)
     st.markdown("### Legal Mind AI")
-    st.caption("v5.4 • Stable Core")
+    st.caption("v6.0 • Native Core")
     st.markdown("---")
     
     api_key = st.text_input("🔑 API Credentials", type="password", placeholder="Paste Google Key")
-    if api_key: os.environ["GOOGLE_API_KEY"] = api_key
+    if api_key: 
+        os.environ["GOOGLE_API_KEY"] = api_key
+        # Configure the native client immediately
+        genai.configure(api_key=api_key)
     
     # LOAD BRAIN
     if os.path.exists("faiss_index_tax_act"):
@@ -113,7 +117,7 @@ if prompt := st.chat_input("Query the Legal Database..."):
             # VISUAL LOADING STATE
             status_box = st.status("⚖️ Analyzing Legal Precedents...", expanded=True)
             
-            # 1. RETRIEVE DOCUMENTS
+            # 1. RETRIEVE DOCUMENTS (LangChain - Works well)
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
@@ -121,45 +125,41 @@ if prompt := st.chat_input("Query the Legal Database..."):
             status_box.write("✅ Evidence Retrieved.")
             status_box.update(label="Drafting Response...", state="running", expanded=False)
             
-            # 2. GENERATE (Simplified - No complex Safety Settings)
+            # 2. GENERATE (Native Google Client - NO Pydantic Errors)
+            full_prompt = f"""
+            SYSTEM: You are a Senior Legal Counsel.
+            CONTEXT: {context_text}
+            QUESTION: {prompt}
+            TASK: Answer strictly based on the context. Cite sections.
+            ANSWER:
+            """
             
-            def try_generate(model_name):
-                # We removed the safety_settings dict causing the crash
-                llm = ChatGoogleGenerativeAI(
-                    model=model_name, 
-                    temperature=0.0, 
-                    streaming=True
-                )
-                prompt_template = f"""
-                SYSTEM: You are a Senior Legal Counsel.
-                CONTEXT: {context_text}
-                QUESTION: {prompt}
-                TASK: Answer strictly based on the context. Cite sections.
-                ANSWER:
-                """
-                return llm.stream(prompt_template)
-
             full_response = ""
             message_placeholder = st.empty()
             
             try:
-                # TRY 1: Flash Model
-                stream = try_generate("models/gemini-1.5-flash")
-                for chunk in stream:
-                    full_response += chunk.content
-                    message_placeholder.markdown(full_response + "▌")
+                # Direct call to Google's servers, bypassing LangChain validation
+                model = genai.GenerativeModel('gemini-1.5-flash')
+                response = model.generate_content(full_prompt, stream=True)
+                
+                for chunk in response:
+                    if chunk.text:
+                        full_response += chunk.text
+                        message_placeholder.markdown(full_response + "▌")
                 
             except Exception as e:
-                # TRY 2: Pro Model (Fallback)
+                # Fallback to older model if Flash fails
                 try:
                     status_box.write("⚠️ Switching to Backup Model...")
-                    stream = try_generate("gemini-pro")
-                    for chunk in stream:
-                        full_response += chunk.content
-                        message_placeholder.markdown(full_response + "▌")
+                    model = genai.GenerativeModel('gemini-pro')
+                    response = model.generate_content(full_prompt, stream=True)
+                    for chunk in response:
+                        if chunk.text:
+                            full_response += chunk.text
+                            message_placeholder.markdown(full_response + "▌")
                 except Exception as final_e:
                     status_box.update(label="Error", state="error")
-                    message_placeholder.error(f"⚠️ AI Generation Error: {str(final_e)}")
+                    message_placeholder.error(f"Generation Error: {str(final_e)}")
                     st.info("Raw Evidence Retrieved:")
                     st.write(context_text)
 
