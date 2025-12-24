@@ -8,3 +8,4 @@ faiss-cpu
 pymupdf
 sentence-transformers
 python-dotenv
+duckduckgo-search
