@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 import time
+import concurrent.futures
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -11,89 +12,81 @@ import tempfile
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚡", layout="wide")
 
-# 2. CSS STYLING (Neural Pulse)
+# 2. CSS STYLING
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
-    
     .stApp { background-color: #000000; font-family: 'Inter', sans-serif; }
     header[data-testid="stHeader"] { background: transparent; }
-    
-    .stChatInputContainer textarea { 
-        background-color: #111 !important; 
-        border: 1px solid #333 !important; 
-        color: white !important; 
-    }
-    
-    [data-testid="stSidebar"] { 
-        background-color: #050505; 
-        border-right: 1px solid #222; 
-    }
+    .stChatInputContainer textarea { background-color: #111 !important; border: 1px solid #333 !important; color: white !important; }
+    [data-testid="stSidebar"] { background-color: #050505; border-right: 1px solid #222; }
     
     /* NEURAL PULSE ANIMATION */
-    .neural-loader {
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        height: 60px;
-        gap: 8px;
-    }
-    .bar {
-        width: 6px;
-        height: 20px;
-        background: linear-gradient(180deg, #4F46E5, #9333EA);
-        border-radius: 3px;
-        animation: pulse 1s ease-in-out infinite;
-    }
+    .neural-loader { display: flex; justify-content: center; align-items: center; height: 60px; gap: 8px; }
+    .bar { width: 6px; height: 20px; background: linear-gradient(180deg, #4F46E5, #9333EA); border-radius: 3px; animation: pulse 1s ease-in-out infinite; }
     .bar:nth-child(1) { animation-delay: 0.0s; height: 20px; }
     .bar:nth-child(2) { animation-delay: 0.1s; height: 35px; }
     .bar:nth-child(3) { animation-delay: 0.2s; height: 45px; }
     .bar:nth-child(4) { animation-delay: 0.3s; height: 35px; }
     .bar:nth-child(5) { animation-delay: 0.4s; height: 20px; }
-    
-    @keyframes pulse {
-        0% { transform: scaleY(1); opacity: 0.6; }
-        50% { transform: scaleY(1.5); opacity: 1; box-shadow: 0 0 10px rgba(147, 51, 234, 0.5); }
-        100% { transform: scaleY(1); opacity: 0.6; }
-    }
+    @keyframes pulse { 0% { opacity: 0.6; } 50% { transform: scaleY(1.5); opacity: 1; } 100% { opacity: 0.6; } }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. BACKEND LOGIC 
+# 3. HIGH-SPEED CONCURRENT LOGIC
 
-def create_vector_store_optimistic(chunks, embeddings):
-    vector_store = None
-    batch_size = 100 
-    total_chunks = len(chunks)
+def embed_batch(args):
+    """Worker function to embed a single batch of text."""
+    batch, embeddings = args
+    try:
+        # Create a mini vector store for just this batch
+        vector_store = FAISS.from_documents(batch, embeddings)
+        return vector_store
+    except Exception:
+        time.sleep(2) # Brief cool-off on error
+        try:
+            vector_store = FAISS.from_documents(batch, embeddings)
+            return vector_store
+        except:
+            return None
+
+def create_vector_store_concurrent(chunks, embeddings):
+    batch_size = 100
+    # Create batches
+    batches = [chunks[i : i + batch_size] for i in range(0, len(chunks), batch_size)]
     
-    progress_bar = st.progress(0, text="Accelerating Neural Engine...")
+    progress_bar = st.progress(0, text="Initializing Parallel Threads...")
     
-    for i in range(0, total_chunks, batch_size):
-        batch = chunks[i : i + batch_size]
-        success = False
-        retries = 0
-        while not success and retries < 3:
-            try:
-                if vector_store is None:
-                    vector_store = FAISS.from_documents(batch, embeddings)
+    # Prepare arguments for workers
+    args = [(batch, embeddings) for batch in batches]
+    
+    main_vector_store = None
+    completed = 0
+    
+    # Run 4 Workers in Parallel (Optimized for Free Tier limits)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        results = executor.map(embed_batch, args)
+        
+        for result in results:
+            if result is not None:
+                if main_vector_store is None:
+                    main_vector_store = result
                 else:
-                    vector_store.add_documents(batch)
-                success = True 
-            except Exception as e:
-                retries += 1
-                time.sleep(2 * retries)
-        
-        progress = min((i + batch_size) / total_chunks, 1.0)
-        progress_bar.progress(progress, text=f"Indexing batch {i//batch_size + 1}...")
-        
+                    main_vector_store.merge_from(result)
+            
+            completed += 1
+            progress = min(completed / len(batches), 1.0)
+            progress_bar.progress(progress, text=f"Processing Batch {completed}/{len(batches)} (Multi-Threaded)...")
+            
     progress_bar.empty()
-    return vector_store
+    return main_vector_store
 
 @st.cache_resource
 def process_files(uploaded_files):
     if not uploaded_files: return None
     
     documents = []
+    # Parallel Read (PyMuPDF is fast enough to do sequentially, but let's keep it simple)
     for uploaded_file in uploaded_files:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
@@ -105,7 +98,7 @@ def process_files(uploaded_files):
     
     if not documents: return None
 
-    # STRUCTURE-AWARE CHUNKING
+    # Structure-Aware Splitter
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, 
         chunk_overlap=200,
@@ -113,13 +106,14 @@ def process_files(uploaded_files):
     )
     chunks = text_splitter.split_documents(documents)
     
-    st.toast(f"Structure-Aware Splitter created {len(chunks)} nodes.", icon="🧠")
+    st.toast(f"Split into {len(chunks)} fragments.", icon="🧩")
     
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     
     try:
-        vector_store = create_vector_store_optimistic(chunks, embeddings)
-        st.toast("System Online!", icon="✅")
+        # Switch to Concurrent Engine
+        vector_store = create_vector_store_concurrent(chunks, embeddings)
+        st.toast("Neural Index Built.", icon="✅")
         return vector_store
     except Exception as e:
         st.error(f"Connection Error: {e}")
@@ -143,16 +137,14 @@ if "messages" not in st.session_state: st.session_state.messages = []
 if uploaded_files and api_key and "vector_store" not in st.session_state:
     st.session_state.vector_store = process_files(uploaded_files)
 
-# Hero
+# Chat Interface
 if not st.session_state.messages:
     st.markdown("<br><h1 style='text-align: center; color: white;'>Legal Research, Accelerated.</h1>", unsafe_allow_html=True)
 
-# Chat History
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
-# Chat Input & Logic
 if prompt := st.chat_input("Ask a legal question..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"): st.markdown(prompt)
@@ -160,15 +152,9 @@ if prompt := st.chat_input("Ask a legal question..."):
     if "vector_store" in st.session_state and st.session_state.vector_store is not None:
         with st.chat_message("assistant"):
             
-            # ANIMATION
             placeholder_anim = st.empty()
-            placeholder_anim.markdown("""
-                <div class="neural-loader">
-                    <div class="bar"></div><div class="bar"></div><div class="bar"></div>
-                </div>
-            """, unsafe_allow_html=True)
+            placeholder_anim.markdown("""<div class="neural-loader"><div class="bar"></div><div class="bar"></div><div class="bar"></div></div>""", unsafe_allow_html=True)
             
-            # AGENTIC STREAMING LOGIC (No RetrievalQA needed!)
             llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.0, streaming=True)
             
             prompt_template = """
@@ -183,15 +169,14 @@ if prompt := st.chat_input("Ask a legal question..."):
             """
             PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
             
-            # 1. Fetch relevant chunks
+            # Retrieval
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
             
-            # Kill Animation before typing
             placeholder_anim.empty()
             
-            # 2. Stream the Response
+            # Streaming Generation
             full_response = ""
             message_placeholder = st.empty()
             
@@ -203,9 +188,8 @@ if prompt := st.chat_input("Ask a legal question..."):
                 
                 message_placeholder.markdown(full_response)
                 
-                # 3. Save and Show Citations
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
-                with st.expander("Citations (Structure-Aware)"):
+                with st.expander("Citations"):
                     for doc in docs:
                         st.markdown(f"**Reference:**")
                         st.caption(doc.page_content[:300])
