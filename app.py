@@ -1,7 +1,6 @@
 import streamlit as st
 import os
 import shutil
-from datetime import datetime
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
@@ -13,50 +12,15 @@ import fitz  # PyMuPDF
 # 1. CONFIGURATION
 st.set_page_config(page_title="Legal Mind AI", page_icon="⚖️", layout="wide")
 
-# 2. CYBER-LEGAL GLASSMORPHISM THEME
+# 2. GLASSMORPHISM THEME
 st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&family=JetBrains+Mono:wght@400&display=swap');
-    
-    /* Main Background */
-    .stApp { 
-        background-color: #050505; 
-        background-image: radial-gradient(circle at 50% 50%, #1a1a1a 0%, #000000 100%);
-        font-family: 'Inter', sans-serif; 
-    }
-    
-    /* Sidebar Glass Effect */
-    [data-testid="stSidebar"] { 
-        background-color: rgba(10, 10, 10, 0.7); 
-        backdrop-filter: blur(12px); 
-        border-right: 1px solid rgba(255, 255, 255, 0.08); 
-    }
-
-    /* Input Box Glass */
-    .stChatInputContainer textarea { 
-        background-color: rgba(255, 255, 255, 0.05) !important; 
-        border: 1px solid rgba(255, 255, 255, 0.1) !important; 
-        color: #e0e0e0 !important; 
-        border-radius: 12px;
-        backdrop-filter: blur(10px);
-    }
-    
-    /* Messages */
-    .stChatMessage {
-        background: transparent;
-    }
-    
-    /* Headers */
-    h1, h2, h3 { color: #fff; font-weight: 600; letter-spacing: -0.5px; }
-    p { color: #ccc; font-weight: 300; }
-    
-    /* Custom Gradient Text */
-    .gradient-text {
-        background: linear-gradient(90deg, #D4AF37, #F1C40F);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-weight: bold;
-    }
+    .stApp { background-color: #050505; background-image: radial-gradient(circle at 50% 50%, #1a1a1a 0%, #000000 100%); font-family: 'Inter', sans-serif; }
+    [data-testid="stSidebar"] { background-color: rgba(10, 10, 10, 0.7); backdrop-filter: blur(12px); border-right: 1px solid rgba(255, 255, 255, 0.08); }
+    .stChatInputContainer textarea { background-color: rgba(255, 255, 255, 0.05) !important; border: 1px solid rgba(255, 255, 255, 0.1) !important; color: #e0e0e0 !important; border-radius: 12px; }
+    h1, h2, h3 { color: #fff; } p { color: #ccc; }
+    .gradient-text { background: linear-gradient(90deg, #D4AF37, #F1C40F); -webkit-background-clip: text; -webkit-text-fill-color: transparent; font-weight: bold; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -85,13 +49,22 @@ def process_files(uploaded_files):
     chunks = text_splitter.split_documents(documents)
     
     progress.progress(0.5, text="Building Neural Index...")
-    
     embeddings = get_embeddings()
     vector_store = FAISS.from_documents(chunks, embeddings)
     vector_store.save_local("faiss_index_tax_act")
-    
     progress.empty()
     return vector_store
+
+# --- NEW: QUERY REFINER ---
+def refine_query(raw_prompt):
+    """Uses a small, fast model to fix typos and add legal context."""
+    llm = ChatGroq(temperature=0, model_name="llama-3.3-70b-versatile") # Using 70b because it's smarter at logic
+    system = "You are a Legal Search Assistant. Reformulate the user's query into a precise legal search term. Correct typos (e.g., 'Task' -> 'Tax'). If they ask about '2026 reform', mention 'Nigeria Tax Act 2025' since it is effective 2026. Return ONLY the reformulated query."
+    try:
+        response = llm.invoke([("system", system), ("human", raw_prompt)])
+        return response.content.strip()
+    except:
+        return raw_prompt # Fallback
 
 # 4. UI ORCHESTRATION
 
@@ -100,43 +73,31 @@ if "usage_count" not in st.session_state: st.session_state.usage_count = 0
 
 with st.sidebar:
     st.markdown("## ⚖️ Legal Mind <span style='font-size:0.8em; color:#D4AF37'>AI</span>", unsafe_allow_html=True)
-    st.caption("Enterprise Legal Intelligence")
+    st.caption("v8.0 • Smart Query Refinement")
     st.markdown("---")
     
-    # 1. USAGE GUARDRAIL
     daily_limit = 1000
     remaining = daily_limit - st.session_state.usage_count
-    st.markdown(f"**Daily Credits:** `{remaining}/{daily_limit}`")
+    st.markdown(f"**Credits:** `{remaining}/{daily_limit}`")
     st.progress(st.session_state.usage_count / daily_limit)
     
-    # 2. TOGGLE MODE
-    st.markdown("### 🧠 Search Mode")
-    mode = st.radio(
-        "Source:",
-        ["Strict Compliance (Docs)", "Web Research (Live)"],
-        captions=["Zero hallucinations. Only uses your PDF.", "Searches internet for broader context."],
-        label_visibility="collapsed"
-    )
-    
+    mode = st.radio("Mode:", ["Strict Compliance (Docs)", "Web Research (Live)"], label_visibility="collapsed")
     st.markdown("---")
     
-    # GROQ KEY
     api_key = st.text_input("🔑 Groq API Key", type="password", placeholder="gsk_...")
     if api_key: os.environ["GROQ_API_KEY"] = api_key
     
-    # LOAD BRAIN
     if os.path.exists("faiss_index_tax_act") and mode == "Strict Compliance (Docs)":
         if "vector_store" not in st.session_state or st.session_state.vector_store is None:
             try:
                 embeddings = get_embeddings()
                 st.session_state.vector_store = FAISS.load_local("faiss_index_tax_act", embeddings, allow_dangerous_deserialization=True)
                 st.success("⚡ Strict Brain Loaded")
-            except:
-                pass
+            except: pass
 
     if mode == "Strict Compliance (Docs)":
         uploaded_files = st.file_uploader("📂 Upload New Files", type="pdf", accept_multiple_files=True)
-        if st.button("⚡ Process Files", type="primary", use_container_width=True):
+        if st.button("⚡ Process Files", type="primary"):
             if uploaded_files:
                 with st.spinner("Processing..."):
                     store = process_files(uploaded_files)
@@ -146,8 +107,6 @@ with st.sidebar:
                         st.rerun()
 
     if os.path.exists("faiss_index_tax_act"):
-        with open("faiss_index_tax_act/index.faiss", "rb") as f:
-            pass # Just checking
         shutil.make_archive("legal_brain", 'zip', "faiss_index_tax_act")
         with open("legal_brain.zip", "rb") as fp:
             st.download_button("💾 Download Brain", fp, "legal_brain.zip", "application/zip")
@@ -155,7 +114,6 @@ with st.sidebar:
 # Chat Interface
 if not st.session_state.messages:
     st.markdown("<br><br><h1 style='text-align: center;'>Legal Research, <span class='gradient-text'>Perfected.</span></h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Strict Grounding • Verifiable Citations • Zero Hallucinations</p>", unsafe_allow_html=True)
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -169,60 +127,64 @@ if prompt := st.chat_input("Query the Legal Database..."):
         st.warning("Please enter Groq API Key.")
         st.stop()
 
-    # Increment Usage
     st.session_state.usage_count += 1
     
     with st.chat_message("assistant"):
         
-        status_box = st.status("⚖️ Analyzing Request...", expanded=True)
+        status_box = st.status("🧠 Refining Legal Query...", expanded=True)
+        
+        # STEP 1: REFINE QUERY (The "Sharpness" Fix)
+        refined_prompt = refine_query(prompt)
+        status_box.write(f"**Optimized Search:** `{refined_prompt}`")
+        
         context_text = ""
         docs = []
         
-        # --- PATH 1: STRICT DOCS ---
+        # STEP 2: RETRIEVE
         if mode == "Strict Compliance (Docs)":
             if "vector_store" in st.session_state and st.session_state.vector_store:
-                status_box.write("🔍 Scanning Internal Documents...")
-                retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
-                docs = retriever.invoke(prompt)
+                status_box.write("🔍 Deep-Scanning Internal Documents...")
+                # Increased 'k' to 6 for broader context
+                retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 6})
+                docs = retriever.invoke(refined_prompt)
                 context_text = "\n\n".join([d.page_content for d in docs])
-                status_box.write("✅ Evidence Locked.")
+                status_box.write("✅ Relevant Clauses Locked.")
             else:
                 status_box.error("No documents loaded.")
                 st.stop()
 
-        # --- PATH 2: WEB RESEARCH ---
         else:
             status_box.write("🌍 Scanning Global Legal Web...")
             search = DuckDuckGoSearchRun()
             try:
-                context_text = search.run(f"Nigeria Tax Law 2025 {prompt}")
+                # Search using the REFINED prompt, not the user's typo
+                context_text = search.run(f"{refined_prompt} Nigeria law")
                 status_box.write("✅ Web Evidence Retrieved.")
             except Exception as e:
                 status_box.error(f"Search failed: {e}")
                 st.stop()
         
-        status_box.update(label="Drafting Response...", state="running", expanded=False)
+        status_box.update(label="Drafting Legal Opinion...", state="running", expanded=False)
         
-        # GENERATE (Groq Llama 3.3)
-        llm = ChatGroq(temperature=0, model_name="llama-3.3-70b-versatile")
+        # STEP 3: GENERATE
+        llm = ChatGroq(temperature=0.1, model_name="llama-3.3-70b-versatile")
         
         system_instruction = f"""
-        You are a Senior Legal Counsel.
-        MODE: {'STRICT INTERNAL' if mode == 'Strict Compliance (Docs)' else 'WEB RESEARCH'}
+        You are a Senior Legal Counsel. 
+        Your goal is to connect the user's intent to the provided legal text, even if the phrasing isn't exact.
         
         CONTEXT:
         {context_text}
         
+        USER QUESTION: {prompt} (Refined as: {refined_prompt})
+        
         TASK: 
-        Answer the user's question based strictly on the context provided above. 
-        If the context does not contain the answer, state that explicitly.
-        Cite your sources (Section numbers for docs, or URLs for web).
+        1. Answer strictly based on the context.
+        2. If the user asks about "2026 reform" and the text mentions "2025 Act effective 2026", EXPLAIN that connection.
+        3. Cite your sources.
         """
         
-        messages = [
-            ("system", system_instruction),
-            ("human", prompt)
-        ]
+        messages = [("system", system_instruction), ("human", prompt)]
         
         full_response = ""
         message_placeholder = st.empty()
@@ -237,7 +199,6 @@ if prompt := st.chat_input("Query the Legal Database..."):
             status_box.update(label="Complete", state="complete", expanded=False)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
             
-            # Show Citations (Only for Strict Mode)
             if mode == "Strict Compliance (Docs)" and docs:
                 with st.expander("⚖️  View Source Evidence"):
                     for doc in docs:
