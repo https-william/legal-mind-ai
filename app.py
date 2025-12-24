@@ -92,15 +92,15 @@ def create_vector_store_concurrent(chunks, embeddings):
     progress_bar.empty()
     return main_vector_store
 
-@st.cache_resource
+# --- FIX: REMOVED @st.cache_resource DECORATOR ---
+# This function is now standard. We rely on session_state to remember the result.
 def process_files(uploaded_files):
     if not uploaded_files: return None
     
     documents = []
     
-    # --- DIRECT MEMORY READ (Safe Mode) ---
+    # --- DIRECT MEMORY READ ---
     for uploaded_file in uploaded_files:
-        # Use getvalue() instead of read() to prevent pointer exhaustion
         file_bytes = uploaded_file.getvalue()
         with fitz.open(stream=file_bytes, filetype="pdf") as doc:
             for i, page in enumerate(doc):
@@ -115,7 +115,7 @@ def process_files(uploaded_files):
         st.error("❌ Error: Could not extract text from PDF.")
         return None
 
-    # Structure-Aware Splitter (Legal Headers)
+    # Structure-Aware Splitter
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, 
         chunk_overlap=200,
@@ -132,7 +132,6 @@ def process_files(uploaded_files):
         st.toast("Jurisprudence Online.", icon="⚖️")
         return vector_store
     except Exception as e:
-        # SHOW THE ERROR ON SCREEN so we know why it failed
         st.error(f"❌ Connection Error: {e}")
         return None
 
@@ -152,15 +151,13 @@ with st.sidebar:
     if "vector_store" in st.session_state and st.session_state.vector_store is not None:
         st.success(f"● System Ready")
         
-    # RESET BUTTON (The Fix for Zombie State)
     if st.button("↻ Reset System", use_container_width=True):
         st.session_state.vector_store = None
         st.rerun()
 
 if "messages" not in st.session_state: st.session_state.messages = []
 
-# Process Uploads - FIXED LOGIC HERE
-# If files exist, key exists, AND (store is missing OR store is broken/None) -> Try processing
+# Process Uploads
 if uploaded_files and api_key and ("vector_store" not in st.session_state or st.session_state.vector_store is None):
     st.session_state.vector_store = process_files(uploaded_files)
 
@@ -181,7 +178,6 @@ if prompt := st.chat_input("Query the Legal Database..."):
     if "vector_store" in st.session_state and st.session_state.vector_store is not None:
         with st.chat_message("assistant"):
             
-            # ANIMATION
             placeholder_anim = st.empty()
             placeholder_anim.markdown("""<div class="neural-loader"><div class="bar"></div><div class="bar"></div><div class="bar"></div></div>""", unsafe_allow_html=True)
             
@@ -199,14 +195,12 @@ if prompt := st.chat_input("Query the Legal Database..."):
             """
             PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
             
-            # Retrieval
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
             
             placeholder_anim.empty()
             
-            # Streaming Generation
             full_response = ""
             message_placeholder = st.empty()
             
