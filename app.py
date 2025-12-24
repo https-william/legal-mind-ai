@@ -2,11 +2,12 @@ import streamlit as st
 import os
 import time
 import concurrent.futures
+import fitz  # This is PyMuPDF
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_core.prompts import PromptTemplate
+from langchain_core.documents import Document
 import tempfile
 
 # 1. CONFIGURATION
@@ -33,17 +34,16 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 3. HIGH-SPEED CONCURRENT LOGIC
+# 3. HIGH-SPEED LOGIC (MEMORY ONLY)
 
 def embed_batch(args):
     """Worker function to embed a single batch of text."""
     batch, embeddings = args
     try:
-        # Create a mini vector store for just this batch
         vector_store = FAISS.from_documents(batch, embeddings)
         return vector_store
     except Exception:
-        time.sleep(2) # Brief cool-off on error
+        time.sleep(2)
         try:
             vector_store = FAISS.from_documents(batch, embeddings)
             return vector_store
@@ -52,18 +52,15 @@ def embed_batch(args):
 
 def create_vector_store_concurrent(chunks, embeddings):
     batch_size = 100
-    # Create batches
     batches = [chunks[i : i + batch_size] for i in range(0, len(chunks), batch_size)]
     
     progress_bar = st.progress(0, text="Initializing Parallel Threads...")
     
-    # Prepare arguments for workers
     args = [(batch, embeddings) for batch in batches]
-    
     main_vector_store = None
     completed = 0
     
-    # Run 4 Workers in Parallel (Optimized for Free Tier limits)
+    # 4 Parallel Workers
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
         results = executor.map(embed_batch, args)
         
@@ -76,7 +73,7 @@ def create_vector_store_concurrent(chunks, embeddings):
             
             completed += 1
             progress = min(completed / len(batches), 1.0)
-            progress_bar.progress(progress, text=f"Processing Batch {completed}/{len(batches)} (Multi-Threaded)...")
+            progress_bar.progress(progress, text=f"Processing Batch {completed}/{len(batches)} (RAM Mode)...")
             
     progress_bar.empty()
     return main_vector_store
@@ -86,19 +83,24 @@ def process_files(uploaded_files):
     if not uploaded_files: return None
     
     documents = []
-    # Parallel Read (PyMuPDF is fast enough to do sequentially, but let's keep it simple)
+    
+    # --- SPEED UPGRADE: DIRECT MEMORY READ (NO DISK I/O) ---
     for uploaded_file in uploaded_files:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_file_path = tmp_file.name
+        # Read file bytes directly into PyMuPDF
+        file_bytes = uploaded_file.read()
         
-        loader = PyMuPDFLoader(tmp_file_path)
-        docs = loader.load()
-        documents.extend(docs)
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            for i, page in enumerate(doc):
+                text = page.get_text()
+                if text:
+                    # Manually create Document object to skip LangChain overhead
+                    documents.append(Document(
+                        page_content=text, 
+                        metadata={"page": i+1, "source": uploaded_file.name}
+                    ))
     
     if not documents: return None
 
-    # Structure-Aware Splitter
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000, 
         chunk_overlap=200,
@@ -106,14 +108,13 @@ def process_files(uploaded_files):
     )
     chunks = text_splitter.split_documents(documents)
     
-    st.toast(f"Split into {len(chunks)} fragments.", icon="🧩")
+    st.toast(f"Extracted {len(chunks)} fragments from RAM.", icon="⚡")
     
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     
     try:
-        # Switch to Concurrent Engine
         vector_store = create_vector_store_concurrent(chunks, embeddings)
-        st.toast("Neural Index Built.", icon="✅")
+        st.toast("System Online!", icon="✅")
         return vector_store
     except Exception as e:
         st.error(f"Connection Error: {e}")
@@ -169,14 +170,12 @@ if prompt := st.chat_input("Ask a legal question..."):
             """
             PROMPT = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
             
-            # Retrieval
             retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 4})
             docs = retriever.invoke(prompt)
             context_text = "\n\n".join([d.page_content for d in docs])
             
             placeholder_anim.empty()
             
-            # Streaming Generation
             full_response = ""
             message_placeholder = st.empty()
             
